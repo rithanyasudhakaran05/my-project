@@ -67,10 +67,93 @@ export default function App() {
   const [trackQuery, setTrackQuery] = useState('');
   const [trackedIssue, setTrackedIssue] = useState(null);
 
+  // ================= NOTIFICATION ENGINE (CITIZEN) =================
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState([]);
+  const [readNotifIds, setReadNotifIds] = useState(() => {
+    const saved = localStorage.getItem('waterwatch_read_notifs');
+    return saved ? JSON.parse(saved) : [];
+  });
+
   useEffect(() => {
     fetchIssues();
     fetchStats();
   }, [search, categoryFilter, statusFilter, urgencyFilter, user]);
+
+  // Compute status change notifications for logged-in citizen
+  useEffect(() => {
+    if (user?.role === 'citizen' && issues.length > 0) {
+      const citizenIssues = issues.filter(
+        (item) => item.reportedBy?.userId === user.id || item.reportedBy?.email === user.email
+      );
+
+      const computedNotifs = [];
+      citizenIssues.forEach((issue) => {
+        if (issue.status === 'Resolved') {
+          computedNotifs.push({
+            id: `${issue._id}_resolved`,
+            issueId: issue._id,
+            icon: '✅',
+            title: `Complaint Resolved: ${issue.title}`,
+            message: issue.adminRemarks 
+              ? `Official Remarks: "${issue.adminRemarks}"` 
+              : `Your complaint #${issue._id.slice(-6)} has been verified and resolved by the water board.`,
+            status: 'Resolved',
+            time: issue.resolvedAt || issue.updatedAt || issue.createdAt
+          });
+        } else if (issue.status === 'In Progress') {
+          computedNotifs.push({
+            id: `${issue._id}_in_progress`,
+            issueId: issue._id,
+            icon: '🛠️',
+            title: `Work In Progress: ${issue.title}`,
+            message: issue.adminRemarks
+              ? `Update : "${issue.adminRemarks}"`
+              : `Complaint #${issue._id.slice(-6)} assigned to field maintenance crew.`,
+            status: 'In Progress',
+            time: issue.updatedAt || issue.createdAt
+          });
+        } else if (issue.status === 'Pending') {
+          computedNotifs.push({
+            id: `${issue._id}_pending`,
+            issueId: issue._id,
+            icon: '📋',
+            title: `Complaint Logged: ${issue.title}`,
+            message: `Ticket #${issue._id.slice(-6)} received and queued for inspection.`,
+            status: 'Pending',
+            time: issue.createdAt
+          });
+        }
+      });
+
+      // Sort newest first
+      computedNotifs.sort((a, b) => new Date(b.time) - new Date(a.time));
+      setNotifications(computedNotifs);
+    }
+  }, [issues, user]);
+
+  const unreadCount = notifications.filter((n) => !readNotifIds.includes(n.id)).length;
+
+  const markAllNotificationsAsRead = () => {
+    const allIds = notifications.map((n) => n.id);
+    setReadNotifIds(allIds);
+    localStorage.setItem('waterwatch_read_notifs', JSON.stringify(allIds));
+  };
+
+  const handleNotificationClick = (notif) => {
+    if (!readNotifIds.includes(notif.id)) {
+      const updated = [...readNotifIds, notif.id];
+      setReadNotifIds(updated);
+      localStorage.setItem('waterwatch_read_notifs', JSON.stringify(updated));
+    }
+    const matched = issues.find((i) => i._id === notif.issueId);
+    if (matched) {
+      setTrackedIssue(matched);
+    }
+    setTrackQuery(notif.issueId);
+    setActiveTab('track');
+    setShowNotifications(false);
+  };
 
   const fetchIssues = async () => {
     try {
@@ -94,7 +177,6 @@ export default function App() {
 
   const fetchStats = async () => {
     try {
-      // Citizen logged in: show their own report stats. Otherwise community total.
       const url = user?.id && user?.role === 'citizen'
         ? `${API_URL}/issues/stats?userId=${user.id}`
         : `${API_URL}/issues/stats`;
@@ -107,6 +189,111 @@ export default function App() {
     } catch (err) {
       console.error(err);
     }
+  };
+
+  // ================= ADMIN DOWNLOAD FEATURES =================
+
+  // 1. Download ALL complaints as an Excel/CSV spreadsheet
+  const handleDownloadAllCSV = () => {
+    if (!issues || issues.length === 0) {
+      alert('No complaints available to export.');
+      return;
+    }
+
+    const headers = [
+      'Complaint ID',
+      'Date Reported',
+      'Category',
+      'Headline',
+      'Urgency',
+      'Current Status',
+      'Address',
+      'Landmark',
+      'Ward',
+      'Citizen Name',
+      'Citizen Phone',
+      'Authority Remarks'
+    ];
+
+    const rows = issues.map((item) => [
+      `"${item._id}"`,
+      `"${new Date(item.createdAt).toLocaleDateString()}"`,
+      `"${item.category}"`,
+      `"${(item.title || '').replace(/"/g, '""')}"`,
+      `"${item.urgency}"`,
+      `"${item.status}"`,
+      `"${(item.location?.address || '').replace(/"/g, '""')}"`,
+      `"${(item.location?.landmark || '').replace(/"/g, '""')}"`,
+      `"${(item.location?.ward || '').replace(/"/g, '""')}"`,
+      `"${(item.reportedBy?.name || 'Citizen').replace(/"/g, '""')}"`,
+      `"${item.reportedBy?.phone || 'N/A'}"`,
+      `"${(item.adminRemarks || 'None').replace(/"/g, '""')}"`
+    ]);
+
+    const csvString = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.download = `WaterWatch_Municipal_Reports_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    URL.revokeObjectURL(url);
+  };
+
+  // 2. Download a SINGLE complaint as an official Municipal Work Order (.txt)
+  const handleDownloadSingleReport = (item) => {
+    const reportText = `=================================================================
+MUNICIPAL WATER BOARD - OFFICIAL COMPLAINT WORK ORDER
+Platform: WaterWatch Community Management
+=================================================================
+
+REFERENCE ID : ${item._id}
+DATE REPORTED: ${new Date(item.createdAt).toLocaleString()}
+PRIORITY     : ${item.urgency.toUpperCase()}
+STATUS       : ${item.status.toUpperCase()}
+
+-----------------------------------------------------------------
+1. ISSUE DETAILS
+-----------------------------------------------------------------
+Category     : ${item.category}
+Headline     : ${item.title}
+Description  : ${item.description}
+
+-----------------------------------------------------------------
+2. LOCATION SPECIFICATIONS
+-----------------------------------------------------------------
+Address      : ${item.location?.address || 'N/A'}
+Landmark     : ${item.location?.landmark || 'N/A'}
+Ward / Zone  : ${item.location?.ward || 'N/A'}
+
+-----------------------------------------------------------------
+3. CITIZEN INFORMATION
+-----------------------------------------------------------------
+Reported By  : ${item.reportedBy?.name || 'Anonymous Citizen'}
+Contact Phone: ${item.reportedBy?.phone || 'N/A'}
+Email        : ${item.reportedBy?.email || 'N/A'}
+
+-----------------------------------------------------------------
+4. MUNICIPAL ACTION & RESOLUTION REMARKS
+-----------------------------------------------------------------
+Authority Remarks: ${item.adminRemarks || 'Under municipal review. Repair team dispatch pending.'}
+Resolved Date    : ${item.resolvedAt ? new Date(item.resolvedAt).toLocaleString() : 'Pending final resolution'}
+
+=================================================================
+Generated on: ${new Date().toLocaleString()} by Water Board Authority
+=================================================================`;
+
+    const blob = new Blob([reportText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const downloadLink = document.createElement('a');
+    downloadLink.href = url;
+    downloadLink.download = `WorkOrder_${item._id.slice(-6)}_${item.category}.txt`;
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    URL.revokeObjectURL(url);
   };
 
   // Convert uploaded image to Base64
@@ -179,7 +366,7 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.message || 'Error submitting report');
 
-      setSuccessMsg(' Water issue reported successfully! Reference ID: ' + data.issue._id);
+      setSuccessMsg('✅ Water issue reported successfully! Reference ID: ' + data.issue._id);
       setFormData({
         title: '',
         category: 'Leakage',
@@ -300,7 +487,7 @@ export default function App() {
             className={`nav-btn ${activeTab === 'home' ? 'active' : ''}`}
             onClick={() => setActiveTab('home')}
           >
-            Home
+             Home
           </button>
 
           {/* CITIZEN-ONLY TABS */}
@@ -310,39 +497,95 @@ export default function App() {
                 className={`nav-btn ${activeTab === 'feed' ? 'active' : ''}`}
                 onClick={() => setActiveTab('feed')}
               >
-                Live Issues
+                 Live Issues
               </button>
               <button
                 className={`nav-btn ${activeTab === 'report' ? 'active' : ''}`}
                 onClick={() => setActiveTab('report')}
               >
-                Report Problem
+                 Report Problem
               </button>
               <button
                 className={`nav-btn ${activeTab === 'track' ? 'active' : ''}`}
                 onClick={() => setActiveTab('track')}
               >
-                Track Status
+                 Track Status
               </button>
             </>
           )}
 
-          {/* ADMIN-ONLY TAB (Authority Dashboard) */}
+          {/* ADMIN-ONLY TAB */}
           {user?.role === 'admin' && (
             <button
               className={`nav-btn ${activeTab === 'admin' ? 'active' : ''}`}
               onClick={() => setActiveTab('admin')}
             >
-              🛠️ Authority Panel
+               Authority Panel
             </button>
           )}
         </div>
 
         <div className="nav-user">
+          {/* NOTIFICATION BELL FOR LOGGED-IN CITIZENS */}
+          {user?.role === 'citizen' && (
+            <div style={{ position: 'relative' }}>
+              <button
+                className="notif-bell-btn"
+                onClick={() => setShowNotifications(!showNotifications)}
+                title="Notifications & Updates"
+              >
+                🔔
+                {unreadCount > 0 && <span className="notif-badge">{unreadCount}</span>}
+              </button>
+
+              {/* NOTIFICATION DROPDOWN POPUP */}
+              {showNotifications && (
+                <div className="notif-dropdown">
+                  <div className="notif-header">
+                    <h4> Complaint Updates</h4>
+                    {unreadCount > 0 && (
+                      <button
+                        style={{ background: 'transparent', border: 'none', color: '#2a553e', fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer' }}
+                        onClick={markAllNotificationsAsRead}
+                      >
+                        Mark all as read
+                      </button>
+                    )}
+                  </div>
+
+                  {notifications.length === 0 ? (
+                    <div style={{ padding: '1.5rem', textAlign: 'center', color: '#666', fontSize: '0.85rem' }}>
+                      No updates yet. When an authority updates your complaint, you'll see alerts here!
+                    </div>
+                  ) : (
+                    <div>
+                      {notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          className={`notif-item ${!readNotifIds.includes(n.id) ? 'unread' : ''}`}
+                          onClick={() => handleNotificationClick(n)}
+                        >
+                          <div className="notif-title">
+                            <span>{n.icon}</span>
+                            <span>{n.title}</span>
+                          </div>
+                          <div className="notif-msg">{n.message}</div>
+                          <div className="notif-time">
+                            🕒 {new Date(n.time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {user ? (
             <>
               <span className={`user-badge ${user.role === 'admin' ? 'admin' : ''}`}>
-                {user.role === 'admin' ? '🛡️ Administrator' : `👤 Citizen: ${user.name}`}
+                {user.role === 'admin' ? ' Administrator' : ` Citizen: ${user.name}`}
               </span>
               <button className="btn btn-secondary" onClick={handleLogout}>
                 Logout
@@ -396,7 +639,6 @@ export default function App() {
         {/* ================= TAB 1: HOME PAGE ================= */}
         {activeTab === 'home' && (
           <div>
-            {/* QUICK ACTIONS BANNER */}
             <div style={{ textAlign: 'center', marginBottom: '3.5rem' }}>
               <h2 style={{ fontSize: '1.9rem', color: '#1b3b2b', marginBottom: '0.4rem', fontWeight: 800 }}>
                 Quick Actions
@@ -406,7 +648,7 @@ export default function App() {
                   ? 'Logged in as Water Board Administrator.' 
                   : user?.role === 'citizen' 
                   ? `Logged in as citizen (${user.name}). Choose an action below:`
-                  : 'Please sign in to file complaints'}
+                  : 'Please sign in to file complaints, or log in with Admin credentials to access the Authority Dashboard:'}
               </p>
 
               <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -416,7 +658,7 @@ export default function App() {
                     style={{ padding: '0.8rem 1.6rem', fontSize: '1rem' }}
                     onClick={() => setActiveTab('admin')}
                   >
-                    Open Authority Management Panel
+                     Open Authority Management Panel
                   </button>
                 ) : (
                   <>
@@ -567,7 +809,7 @@ export default function App() {
               <input
                 type="text"
                 className="search-input"
-                placeholder="Search by title, address, landmark, or reporter..."
+                placeholder=" Search by title, address, landmark, or reporter..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
@@ -578,12 +820,12 @@ export default function App() {
                 onChange={(e) => setCategoryFilter(e.target.value)}
               >
                 <option value="All">All Categories</option>
-                <option value="Leakage">💧 Leakage</option>
-                <option value="Water Shortage">🪣 Water Shortage</option>
-                <option value="Contamination">☣️ Contamination</option>
-                <option value="Tank Overflow">🌊 Tank Overflow</option>
-                <option value="Pipeline Damage">🔧 Pipeline Damage</option>
-                <option value="Wastage">🚿 Wastage</option>
+                <option value="Leakage"> Leakage</option>
+                <option value="Water Shortage"> Water Shortage</option>
+                <option value="Contamination"> Contamination</option>
+                <option value="Tank Overflow"> Tank Overflow</option>
+                <option value="Pipeline Damage"> Pipeline Damage</option>
+                <option value="Wastage"> Wastage</option>
               </select>
 
               <select
@@ -632,11 +874,11 @@ export default function App() {
                       />
                     ) : (
                       <div className="card-no-img">
-                        {item.category === 'Leakage' && '💧'}
-                        {item.category === 'Water Shortage' && '🪣'}
-                        {item.category === 'Contamination' && '☣️'}
-                        {item.category === 'Tank Overflow' && '🌊'}
-                        {item.category === 'Pipeline Damage' && '🔧'}
+                        {item.category === 'Leakage' && ''}
+                        {item.category === 'Water Shortage' && ''}
+                        {item.category === 'Contamination' && ''}
+                        {item.category === 'Tank Overflow' && ''}
+                        {item.category === 'Pipeline Damage' && ''}
                         {!['Leakage', 'Water Shortage', 'Contamination', 'Tank Overflow', 'Pipeline Damage'].includes(item.category) && '🚰'}
                       </div>
                     )}
@@ -722,12 +964,12 @@ export default function App() {
                       className={`cat-btn ${formData.category === cat ? 'selected' : ''}`}
                       onClick={() => setFormData({ ...formData, category: cat })}
                     >
-                      {cat === 'Leakage' && '💧 '}
-                      {cat === 'Water Shortage' && '🪣 '}
-                      {cat === 'Contamination' && '☣️ '}
-                      {cat === 'Tank Overflow' && '🌊 '}
-                      {cat === 'Pipeline Damage' && '🔧 '}
-                      {cat === 'Wastage' && '🚿 '}
+                      {cat === 'Leakage' && ' '}
+                      {cat === 'Water Shortage' && ' '}
+                      {cat === 'Contamination' && ' '}
+                      {cat === 'Tank Overflow' && ' '}
+                      {cat === 'Pipeline Damage' && ' '}
+                      {cat === 'Wastage' && ' '}
                       {cat}
                     </button>
                   ))}
@@ -821,14 +1063,7 @@ export default function App() {
                   className="form-control"
                   onChange={handlePhotoUpload}
                 />
-                <input
-                  type="text"
-                  className="form-control"
-                  style={{ marginTop: '0.5rem' }}
-                  placeholder="Or paste an image web URL here"
-                  value={formData.photo}
-                  onChange={(e) => setFormData({ ...formData, photo: e.target.value })}
-                />
+                
                 {formData.photo && (
                   <img src={formData.photo} alt="Preview" className="photo-preview" />
                 )}
@@ -937,9 +1172,20 @@ export default function App() {
         {/* ================= TAB 5: ADMIN DASHBOARD (ADMIN ONLY) ================= */}
         {activeTab === 'admin' && user?.role === 'admin' && (
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <h2>🛠️ Water Authority Management Dashboard</h2>
-              <span className="user-badge admin">Administrator Mode</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+              <div>
+                <h2> Water Authority Management Dashboard</h2>
+              </div>
+
+              {/* DOWNLOAD ALL COMPLAINTS TO CSV BUTTON */}
+              <button
+                className="btn btn-primary"
+                style={{ background: '#1b3b2b', padding: '0.65rem 1.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                onClick={handleDownloadAllCSV}
+                title="Download all complaints as an Excel/CSV spreadsheet"
+              >
+                 Export All to CSV (Excel)
+              </button>
             </div>
 
             <div className="controls-bar">
@@ -1016,21 +1262,35 @@ export default function App() {
                         </span>
                       </td>
                       <td style={{ padding: '0.8rem' }}>
+                        {/* UPDATE STATUS */}
                         <button
                           className="btn btn-secondary"
-                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', marginRight: '0.4rem' }}
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem', marginRight: '0.35rem' }}
                           onClick={() => {
                             setEditingIssue(item);
                             setAdminStatus(item.status);
                             setAdminRemarks(item.adminRemarks || '');
                           }}
                         >
-                          Update Status
+                          Update
                         </button>
+
+                        {/* DOWNLOAD SINGLE WORK ORDER REPORT */}
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem', marginRight: '0.35rem', background: '#dbebe0', color: '#1b3b2b' }}
+                          onClick={() => handleDownloadSingleReport(item)}
+                          title="Download Work Order (.txt)"
+                        >
+                           Work Order
+                        </button>
+
+                        {/* DELETE */}
                         <button
                           className="btn btn-danger"
                           style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem' }}
                           onClick={() => handleDeleteIssue(item._id)}
+                          title="Delete Complaint"
                         >
                           🗑️
                         </button>
@@ -1056,7 +1316,7 @@ export default function App() {
             {editingIssue.photo && (
               <div style={{ marginBottom: '1rem', background: '#edf5ef', padding: '0.75rem', borderRadius: '8px', textAlign: 'center' }}>
                 <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#334155', textAlign: 'left', marginBottom: '0.4rem' }}>
-                  📷 Citizen's Uploaded Photo Evidence:
+                   Citizen's Uploaded Photo Evidence:
                 </div>
                 <img
                   src={editingIssue.photo}
@@ -1093,13 +1353,24 @@ export default function App() {
               ></textarea>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
-              <button className="btn btn-secondary" onClick={() => setEditingIssue(null)}>
-                Cancel
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'space-between', alignItems: 'center', marginTop: '1.2rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                style={{ background: '#dbebe0', color: '#1b3b2b' }}
+                onClick={() => handleDownloadSingleReport(editingIssue)}
+              >
+                 Download Work Order
               </button>
-              <button className="btn btn-primary" onClick={handleAdminUpdate}>
-                Save Changes
-              </button>
+
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button className="btn btn-secondary" onClick={() => setEditingIssue(null)}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" onClick={handleAdminUpdate}>
+                  Save Changes
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1132,9 +1403,13 @@ export default function App() {
             <h3 style={{ color: '#1b3b2b' }}>
               {isRegistering ? ' Create Citizen Account' : ' Account Login'}
             </h3>
+            <p style={{ fontSize: '0.85rem', color: '#4e6858', marginBottom: '1rem' }}>
+              {isRegistering 
+                ? 'Join our community network to report and track water problems' 
+                : 'Sign in as a Citizen or Administrator'}
+            </p>
 
             <form onSubmit={handleAuthSubmit}>
-              {/* Only citizens can register */}
               {isRegistering && (
                 <>
                   <div className="form-group">
@@ -1185,8 +1460,6 @@ export default function App() {
                   required
                 />
               </div>
-
-              
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
                 <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>

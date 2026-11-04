@@ -89,6 +89,7 @@ html, body, #root, .app-container {
   display: flex;
   align-items: center;
   gap: 0.8rem;
+  position: relative;
 }
 
 .user-badge {
@@ -646,4 +647,118 @@ html, body, #root, .app-container {
   .category-selector { grid-template-columns: repeat(2, 1fr); }
   .about-card { flex-direction: column; }
   .hero h1 { font-size: 2.1rem; }
+}
+
+/* ========================================================
+   NOTIFICATION BELL 🔔 & DROPDOWN ALERT CENTER STYLES
+   ======================================================== */
+.notif-bell-btn {
+  position: relative;
+  background: transparent;
+  border: none;
+  font-size: 1.35rem;
+  cursor: pointer;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.notif-bell-btn:hover {
+  background: rgba(163, 201, 168, 0.25);
+}
+
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: #ef4444;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 800;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--primary-forest);
+  animation: pulseBadge 2s infinite;
+}
+
+@keyframes pulseBadge {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+.notif-dropdown {
+  position: absolute;
+  top: 48px;
+  right: 0;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--border-green);
+  width: 340px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+.notif-header {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid #eef3ef;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f7faf7;
+  border-radius: 12px 12px 0 0;
+}
+
+.notif-header h4 {
+  font-size: 0.92rem;
+  color: var(--primary-forest);
+  margin: 0;
+}
+
+.notif-item {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid #f1f5f2;
+  cursor: pointer;
+  transition: background 0.15s;
+  text-align: left;
+}
+
+.notif-item:hover {
+  background: #f1f8f3;
+}
+
+.notif-item.unread {
+  background: #edf7ef;
+  border-left: 3px solid var(--secondary-green);
+}
+
+.notif-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-dark);
+  margin-bottom: 0.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.notif-msg {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-bottom: 0.3rem;
+}
+
+.notif-time {
+  font-size: 0.72rem;
+  color: #8fa395;
 }
